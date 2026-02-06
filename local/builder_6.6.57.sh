@@ -13,7 +13,7 @@ read -p "请输入自定义内核后缀（默认：android15-8-g29d86c5fc9dd-abo
 CUSTOM_SUFFIX=${CUSTOM_SUFFIX:-android15-8-g29d86c5fc9dd-abogki428889875-4k}
 read -p "是否启用susfs？(y/n，默认：y): " APPLY_SUSFS
 APPLY_SUSFS=${APPLY_SUSFS:-y}
-read -p "是否启用 KPM？(y/n，默认：n): " USE_PATCH_LINUX
+read -p "是否启用 KPM？(b-(re)sukisu内置kpm, k-kernelpatch next独立kpm实现, n-关闭kpm，默认：n): " USE_PATCH_LINUX
 USE_PATCH_LINUX=${USE_PATCH_LINUX:-n}
 read -p "KSU分支版本(y=SukiSU Ultra, r=ReSukiSU, n=KernelSU Next, m=MKSU, k=KSU, l=lkm模式(无内置KSU), 默认：y): " KSU_BRANCH
 KSU_BRANCH=${KSU_BRANCH:-y}
@@ -46,13 +46,21 @@ else
   KSU_TYPE="no KSU"
 fi
 
+if [[ "$USE_PATCH_LINUX" == "b" || "$USE_PATCH_LINUX" == "B" ]]; then
+  KPM_TYPE="builtin"
+elif [[ "$USE_PATCH_LINUX" == "k" || "$USE_PATCH_LINUX" == "K" ]]; then
+  KPM_TYPE="KernelPatch Next"
+else
+  KPM_TYPE="no kpm"
+fi
+
 echo
 echo "===== 配置信息 ====="
 echo "适用机型: $MANIFEST"
 echo "自定义内核后缀: -$CUSTOM_SUFFIX"
 echo "KSU分支版本: $KSU_TYPE"
 echo "启用susfs: $APPLY_SUSFS"
-echo "启用 KPM: $USE_PATCH_LINUX"
+echo "启用 KPM: $KPM_TYPE"
 echo "应用 lz4&zstd 补丁: $APPLY_LZ4"
 echo "应用 lz4kd 补丁: $APPLY_LZ4KD"
 echo "应用网络功能增强优化配置: $APPLY_BETTERNET"
@@ -160,13 +168,13 @@ if [[ "$KSU_BRANCH" == "y" || "$KSU_BRANCH" == "Y" ]]; then
   echo ">>> Version Code: ${KSU_VERSION_CODE}"
 elif [[ "$KSU_BRANCH" == "r" || "$KSU_BRANCH" == "R" ]]; then
   echo ">>> 拉取 ReSukiSU 并设置版本..."
-  curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s builtin
+  curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s main
   cd KernelSU
   GIT_COMMIT_HASH=$(git rev-parse --short=8 HEAD)
   echo "当前提交哈希: $GIT_COMMIT_HASH"
   echo ">>> 正在获取上游 API 版本信息..."
   for i in {1..3}; do
-      KSU_API_VERSION=$(curl -s "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/builtin/kernel/Kbuild" | \
+      KSU_API_VERSION=$(curl -s "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/Kbuild" | \
           grep -m1 "KSU_VERSION_API :=" | \
           awk -F'= ' '{print $2}' | \
           tr -d '[:space:]')
@@ -215,8 +223,8 @@ elif [[ "$KSU_BRANCH" == "n" || "$KSU_BRANCH" == "N" ]]; then
   sed -i "s/KSU_VERSION_TAG_FALLBACK := v0.0.1/KSU_VERSION_TAG_FALLBACK := $KSU_GIT_TAG/g" kernel/Kbuild
   #为KernelSU Next添加WildKSU管理器支持
   cd ../common/drivers/kernelsu
-  wget https://github.com/WildKernels/kernel_patches/raw/refs/heads/main/next/susfs_fix_patches/v1.5.12/fix_apk_sign.c.patch
-  patch -p2 -N -F 3 < fix_apk_sign.c.patch || true
+  wget https://github.com/cctv18/oppo_oplus_realme_sm8650/raw/refs/heads/main/other_patch/apk_sign.patch
+  patch -p2 -N -F 3 < apk_sign.patch || true
 elif [[ "$KSU_BRANCH" == "m" || "$KSU_BRANCH" == "M" ]]; then
   echo "正在配置 MKSU (5ec1cff/KernelSU)..."
   curl -LSs "https://raw.githubusercontent.com/5ec1cff/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s main
@@ -326,6 +334,7 @@ elif [[ "$KSU_BRANCH" == [kK] && "$APPLY_SUSFS" == [yY] ]]; then
   patch -p1 -N -F 3 < 69_hide_stuff.patch || true
 else
   echo ">>> 未开启susfs，跳过susfs补丁配置..."
+  cd common
 fi
 cd ../
 
@@ -398,7 +407,7 @@ echo "CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y" >> "$DEFCONFIG_FILE"
 echo "CONFIG_HEADERS_INSTALL=n" >> "$DEFCONFIG_FILE"
 
 # 仅在启用了 KPM 时添加 KPM 支持
-if [[ "$USE_PATCH_LINUX" == "y" || "$USE_PATCH_LINUX" == "Y" ]]; then
+if [[ "$USE_PATCH_LINUX" == [bB] && $KSU_BRANCH == [yYrR] ]]; then
   echo "CONFIG_KPM=y" >> "$DEFCONFIG_FILE"
 fi
 
@@ -482,32 +491,10 @@ fi
 if [[ "$APPLY_BBG" == "y" || "$APPLY_BBG" == "Y" ]]; then
   echo ">>> 正在启用内核级基带保护..."
   echo "CONFIG_BBG=y" >> "$DEFCONFIG_FILE"
-  cd ./common/security
-  wget https://github.com/cctv18/Baseband-guard/archive/refs/heads/master.zip
-  unzip -q master.zip
-  mv "Baseband-guard-master" baseband-guard
-  printf '\nobj-$(CONFIG_BBG) += baseband-guard/\n' >> ./Makefile
-  sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/lockdown/lockdown,baseband_guard/ } }' ./Kconfig
-  awk '
-  /endmenu/ { last_endmenu_line = NR }
-  { lines[NR] = $0 }
-  END {
-    for (i=1; i<=NR; i++) {
-      if (i == last_endmenu_line) {
-        sub(/endmenu/, "", lines[i]);
-        print lines[i] "source \"security/baseband-guard/Kconfig\""
-        print ""
-        print "endmenu"
-      } else {
-          print lines[i]
-      }
-    }
-  }
-  ' ./Kconfig > Kconfig.tmp && mv Kconfig.tmp ./Kconfig
-  sed -i 's/selinuxfs.o //g' "./selinux/Makefile"
-  sed -i 's/hooks.o //g' "./selinux/Makefile"
-  cat "./baseband-guard/sepatch.txt" >> "./selinux/Makefile"
-  cd ../../
+  cd ./common
+  curl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash
+  sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' security/Kconfig
+  cd ..
 fi
 
 # ===== 禁用 defconfig 检查 =====
@@ -522,10 +509,10 @@ echo ">>> 内核编译成功！"
 
 # ===== 选择使用 patch_linux (KPM补丁)=====
 OUT_DIR="$WORKDIR/kernel_workspace/common/out/arch/arm64/boot"
-if [[ "$USE_PATCH_LINUX" == "y" || "$USE_PATCH_LINUX" == "Y" ]]; then
+if [[ "$USE_PATCH_LINUX" == [bB] && $KSU_BRANCH == [yYrR] ]]; then
   echo ">>> 使用 patch_linux 工具处理输出..."
   cd "$OUT_DIR"
-  wget https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.12.2/patch_linux
+  wget https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/latest/download/patch_linux
   chmod +x patch_linux
   ./patch_linux
   rm -f Image
@@ -554,6 +541,10 @@ if [[ "$APPLY_LZ4KD" == "y" || "$APPLY_LZ4KD" == "Y" ]]; then
   wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/refs/heads/main/zram.zip
 fi
 
+if [[ "$USE_PATCH_LINUX" == [kK] ]]; then
+  wget https://github.com/cctv18/KPatch-Next/releases/latest/download/kpn.zip
+fi
+
 # ===== 生成 ZIP 文件名 =====
 ZIP_NAME="Anykernel3-${MANIFEST}"
 
@@ -566,7 +557,7 @@ fi
 if [[ "$APPLY_LZ4" == "y" || "$APPLY_LZ4" == "Y" ]]; then
   ZIP_NAME="${ZIP_NAME}-lz4-zstd"
 fi
-if [[ "$USE_PATCH_LINUX" == "y" || "$USE_PATCH_LINUX" == "Y" ]]; then
+if [[ "$USE_PATCH_LINUX" == [bBkK] ]]; then
   ZIP_NAME="${ZIP_NAME}-kpm"
 fi
 if [[ "$APPLY_BBR" == "y" || "$APPLY_BBR" == "Y" ]]; then
